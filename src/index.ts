@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { CronJob } from "cron";
 
 const DB_PATH = process.env.DB_PATH ?? "/data/sportivo.db";
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
@@ -132,13 +133,8 @@ async function sendTestNotification(): Promise<void> {
   log(`Test ntfy response: ${response.status} ${response.statusText}`);
 }
 
-async function main(): Promise<void> {
+async function runCheck(): Promise<void> {
   log("Starting check...");
-
-  if (TEST_MODE) {
-    await sendTestNotification();
-  }
-
   const db = initDb();
 
   try {
@@ -161,14 +157,31 @@ async function main(): Promise<void> {
       saveState(db, currentState, false);
     }
 
-    log("State saved to DB. Done.");
+    log("Check complete.");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    log(`ERROR: Failed to fetch page: ${message}`);
-    log("Skipping this check, will retry next run.");
+    log(`ERROR: ${message}`);
+    log("Skipping this check, will retry next cycle.");
   } finally {
     db.close();
   }
+}
+
+async function main(): Promise<void> {
+  if (TEST_MODE) {
+    await sendTestNotification();
+  }
+
+  await runCheck();
+
+  const job = CronJob.from({
+    cronTime: "* * * * *",
+    onTick: runCheck,
+    start: true,
+  });
+
+  const next = job.nextDate().toFormat("HH:mm:ss");
+  log(`Monitor started, scheduled every minute. Next check at ${next}`);
 }
 
 main();
