@@ -5,6 +5,7 @@ const DB_PATH = process.env.DB_PATH ?? "/data/sportivo.db";
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
 const TEST_MODE = process.env.TEST_MODE === "true";
 const FORCE_STATE = process.env.FORCE_STATE as "open" | "closed" | undefined;
+const DEBUG_NOTIFY = process.env.DEBUG_NOTIFY === "true";
 const TARGET_URL = "https://s-sportivo.pl/czlonkostwo/";
 const CLOSED_TEXT = "Rejestracja jest obecnie wyłączona";
 
@@ -154,6 +155,10 @@ async function runCheck(): Promise<void> {
       saveState(db, currentState, true);
     } else {
       log("State unchanged, no notification needed");
+      if (DEBUG_NOTIFY) {
+        log("DEBUG_NOTIFY: Sending debug ping...");
+        await sendTestNotification();
+      }
       saveState(db, currentState, false);
     }
 
