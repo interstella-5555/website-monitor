@@ -155,8 +155,8 @@ async function runCheck(): Promise<void> {
     } else {
       log("State unchanged, no notification needed");
       if (TEST_MODE) {
-        log("TEST_MODE: Sending debug ping...");
-        await sendTestNotification();
+        log("TEST_MODE: Sending status notification anyway...");
+        await notify(currentState, previousState);
       }
       saveState(db, currentState, false);
     }
