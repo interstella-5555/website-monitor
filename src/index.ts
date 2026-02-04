@@ -25,6 +25,13 @@ function initDb(): Database {
       notified INTEGER NOT NULL DEFAULT 0
     )
   `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS error_streak (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      started_at TEXT NOT NULL,
+      notified INTEGER NOT NULL DEFAULT 0
+    )
+  `);
   return db;
 }
 
@@ -110,6 +117,42 @@ async function notify(state: State, previousState: State | null): Promise<void> 
   log("Notification sent successfully!");
 }
 
+async function notifyError(errorMessage: string): Promise<void> {
+  if (!NTFY_TOPIC) return;
+
+  await fetch("https://ntfy.sh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      topic: NTFY_TOPIC,
+      title: "Strona niedostępna!",
+      message: `Strona nie odpowiada od 15 minut. Ostatni błąd: ${errorMessage}`,
+      priority: 4,
+      tags: ["rotating_light"],
+    }),
+  });
+
+  log("Error notification sent!");
+}
+
+async function notifyRecovery(): Promise<void> {
+  if (!NTFY_TOPIC) return;
+
+  await fetch("https://ntfy.sh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      topic: NTFY_TOPIC,
+      title: "Strona znów działa",
+      message: "Strona S-Sportivo znów odpowiada po przerwie.",
+      priority: 3,
+      tags: ["white_check_mark"],
+    }),
+  });
+
+  log("Recovery notification sent!");
+}
+
 async function sendTestNotification(): Promise<void> {
   if (!NTFY_TOPIC) {
     log("WARNING: NTFY_TOPIC not set, skipping test notification");
@@ -141,6 +184,16 @@ async function runCheck(): Promise<void> {
     const currentState = await checkRegistration();
     log(`Current state: ${currentState}`);
 
+    // Check if we're recovering from an error streak
+    const streak = db
+      .query<{ notified: number }, []>("SELECT notified FROM error_streak WHERE id = 1")
+      .get();
+    if (streak?.notified) {
+      log("Recovering from error streak, sending recovery notification...");
+      await notifyRecovery();
+    }
+    db.run("DELETE FROM error_streak");
+
     const previousState = getLastState(db);
     log(`Previous state: ${previousState ?? "(first run)"}`);
 
@@ -163,9 +216,34 @@ async function runCheck(): Promise<void> {
 
     log("Check complete.");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log(`ERROR: ${message}`);
-    log("Skipping this check, will retry next cycle.");
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    log(`ERROR: ${errorMsg}`);
+
+    const streak = db
+      .query<{ started_at: string; notified: number }, []>(
+        "SELECT started_at, notified FROM error_streak WHERE id = 1"
+      )
+      .get();
+
+    if (!streak) {
+      db.run("INSERT INTO error_streak (id, started_at) VALUES (1, datetime('now'))");
+      log("Error streak started.");
+    } else if (!streak.notified) {
+      const overdue = db
+        .query<{ past: number }, []>(
+          "SELECT started_at <= datetime('now', '-15 minutes') AS past FROM error_streak WHERE id = 1"
+        )
+        .get();
+      if (overdue?.past) {
+        log("15 minutes of errors, sending error notification...");
+        await notifyError(errorMsg);
+        db.run("UPDATE error_streak SET notified = 1 WHERE id = 1");
+      } else {
+        log("Error streak ongoing, not yet 15 minutes.");
+      }
+    } else {
+      log("Error streak ongoing, notification already sent.");
+    }
   } finally {
     db.close();
   }
