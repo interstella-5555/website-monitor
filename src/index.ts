@@ -19,7 +19,7 @@ export interface Monitor {
 
 const DB_PATH = process.env.DB_PATH ?? "/data/monitor.db";
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
-const TEST_MODE = process.env.TEST_MODE === "true";
+const NTFY_DEBUG_TOPIC = process.env.NTFY_DEBUG_TOPIC;
 
 function log(monitor: string, message: string): void {
   const now = new Date()
@@ -72,19 +72,23 @@ function saveState(
   ]);
 }
 
-async function sendNotification(payload: {
-  title: string;
-  message: string;
-  priority: number;
-  tags: string[];
-  click: string;
-}): Promise<void> {
-  if (!NTFY_TOPIC) return;
+async function sendNotification(
+  payload: {
+    title: string;
+    message: string;
+    priority: number;
+    tags: string[];
+    click: string;
+  },
+  topic?: string,
+): Promise<void> {
+  const t = topic ?? NTFY_TOPIC;
+  if (!t) return;
 
   const response = await fetch("https://ntfy.sh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic: NTFY_TOPIC, ...payload }),
+    body: JSON.stringify({ topic: t, ...payload }),
   });
 
   if (!response.ok) {
@@ -157,10 +161,9 @@ async function runCheck(monitor: Monitor, db: Database): Promise<void> {
       saveState(db, monitor.name, result.state, true);
     } else {
       log(monitor.name, "State unchanged, no notification needed");
-      if (TEST_MODE) {
-        log(monitor.name, "TEST_MODE: Sending status notification anyway...");
+      if (NTFY_DEBUG_TOPIC) {
         const payload = monitor.notification(result, previousState);
-        await sendNotification({ ...payload, click: monitor.url });
+        await sendNotification({ ...payload, click: monitor.url }, NTFY_DEBUG_TOPIC);
       }
       saveState(db, monitor.name, result.state, false);
     }
