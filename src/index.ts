@@ -20,6 +20,7 @@ export interface Monitor {
 const DB_PATH = process.env.DB_PATH ?? "/data/monitor.db";
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
 const NTFY_DEBUG_TOPIC = process.env.NTFY_DEBUG_TOPIC;
+const DEBUG_MODE = process.env.DEBUG_MODE === "true";
 
 function log(monitor: string, message: string): void {
   const now = new Date()
@@ -161,7 +162,7 @@ async function runCheck(monitor: Monitor, db: Database): Promise<void> {
       saveState(db, monitor.name, result.state, true);
     } else {
       log(monitor.name, "State unchanged, no notification needed");
-      if (NTFY_DEBUG_TOPIC) {
+      if (DEBUG_MODE && NTFY_DEBUG_TOPIC) {
         const payload = monitor.notification(result, previousState);
         await sendNotification({ ...payload, click: monitor.url }, NTFY_DEBUG_TOPIC);
       }

@@ -27,7 +27,8 @@ cp .env.example .env
 | `DB_PATH` | no | `/data/monitor.db` | SQLite database path |
 | `MONITOR_BOOKERO` | no | `true` | Enable/disable bookero monitor |
 | `MONITOR_SPORTIVO` | no | `true` | Enable/disable sportivo monitor |
-| `NTFY_DEBUG_TOPIC` | no | — | Separate ntfy topic for every-cycle status notifications |
+| `NTFY_DEBUG_TOPIC` | no | — | Separate ntfy topic for debug notifications |
+| `DEBUG_MODE` | no | `false` | Send notification on every check cycle (to debug topic) |
 
 ## Run
 
