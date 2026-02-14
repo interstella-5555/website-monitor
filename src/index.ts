@@ -4,11 +4,25 @@ import { CronJob } from "cron";
 const DB_PATH = process.env.DB_PATH ?? "/data/sportivo.db";
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
 const TEST_MODE = process.env.TEST_MODE === "true";
-const FORCE_STATE = process.env.FORCE_STATE as "open" | "closed" | undefined;
-const TARGET_URL = "https://s-sportivo.pl/czlonkostwo/";
-const CLOSED_TEXT = "Rejestracja jest obecnie wyłączona";
+const FORCE_STATE = process.env.FORCE_STATE as "available" | "unavailable" | undefined;
 
-type State = "open" | "closed";
+const BOOKERO_URL = "https://felican_kajetan_radajewski.bookero.pl/";
+const API_BASE = "https://plugin.bookero.pl/plugin-api/v2";
+const BOOKERO_ID = "f08vudX3f5XI";
+const SERVICE_ID = "56550";
+
+type State = "available" | "unavailable";
+
+interface AvailableSlot {
+  date: string;
+  day: string;
+  hours: string[];
+}
+
+interface CheckResult {
+  state: State;
+  slots: AvailableSlot[];
+}
 
 function log(message: string): void {
   const now = new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
@@ -46,65 +60,106 @@ function saveState(db: Database, state: State, notified: boolean): void {
   db.run("INSERT INTO checks (state, notified) VALUES (?, ?)", [state, notified ? 1 : 0]);
 }
 
-async function checkRegistration(): Promise<State> {
-  if (FORCE_STATE) {
-    log(`FORCE_STATE is set to "${FORCE_STATE}", skipping fetch`);
-    return FORCE_STATE;
-  }
-
-  log(`Fetching ${TARGET_URL}...`);
-
-  const response = await fetch(TARGET_URL, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    },
-    signal: AbortSignal.timeout(10_000),
+async function fetchMonth(plusMonths: number): Promise<any> {
+  const params = new URLSearchParams({
+    bookero_id: BOOKERO_ID,
+    service: SERVICE_ID,
+    lang: "pl",
+    periodicity_id: "0",
+    custom_duration_id: "0",
+    worker: "0",
+    plugin_comment: "",
+    phone: "",
+    people: "1",
+    email: "",
+    plus_months: String(plusMonths),
   });
 
-  const body = await response.text();
-  log(`Response: ${response.status} ${response.statusText} (${body.length} bytes)`);
+  const url = `${API_BASE}/getMonth?${params}`;
+  log(`Fetching getMonth (plus_months=${plusMonths})...`);
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(10_000),
+  });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
-  const containsClosed = body.includes(CLOSED_TEXT);
-  log(`Page contains "wyłączona": ${containsClosed}`);
-
-  return containsClosed ? "closed" : "open";
+  const data = await response.json();
+  log(`getMonth(${plusMonths}): valid_month=${data.valid_month}, days=${data.days ? Object.keys(data.days).length : 0}`);
+  return data;
 }
 
-async function notify(state: State, previousState: State | null): Promise<void> {
+async function checkAvailability(): Promise<CheckResult> {
+  if (FORCE_STATE) {
+    log(`FORCE_STATE is set to "${FORCE_STATE}", skipping fetch`);
+    return { state: FORCE_STATE, slots: [] };
+  }
+
+  const slots: AvailableSlot[] = [];
+
+  for (const plusMonths of [0, 1]) {
+    const data = await fetchMonth(plusMonths);
+
+    if (!data.valid_month || !data.days) continue;
+
+    for (const day of Object.values(data.days) as any[]) {
+      if (day.valid_day > 0 && day.hours && day.hours.length > 0) {
+        slots.push({
+          date: day.date,
+          day: day.day ?? "",
+          hours: day.hours.map((h: any) => h.hour ?? h),
+        });
+      }
+    }
+  }
+
+  log(`Found ${slots.length} day(s) with available slots`);
+  return {
+    state: slots.length > 0 ? "available" : "unavailable",
+    slots,
+  };
+}
+
+function formatSlots(slots: AvailableSlot[]): string {
+  return slots
+    .map((s) => `${s.date} (${s.day}): ${s.hours.join(", ")}`)
+    .join("\n");
+}
+
+async function notify(result: CheckResult, previousState: State | null): Promise<void> {
   if (!NTFY_TOPIC) {
     log("WARNING: NTFY_TOPIC not set, skipping notification");
     return;
   }
 
-  const isOpen = state === "open";
-  const title = isOpen ? "Rejestracja OTWARTA!" : "Rejestracja zamknięta";
-  const priority = isOpen ? "5" : "4";
-  const tags = isOpen ? "tada" : "warning";
+  const isAvailable = result.state === "available";
+  const title = isAvailable ? "Wolne terminy USG!" : "Terminy USG zamknięte";
+  const priority = isAvailable ? 5 : 4;
+  const tags = isAvailable ? ["tada"] : ["warning"];
 
   let message: string;
   if (previousState === null) {
-    message = `Pierwsze sprawdzenie. Aktualny stan: ${isOpen ? "rejestracja otwarta" : "rejestracja zamknięta"}.`;
+    message = isAvailable
+      ? `Pierwsze sprawdzenie. Dostępne terminy:\n${formatSlots(result.slots)}`
+      : "Pierwsze sprawdzenie. Brak wolnych terminów.";
   } else {
-    message = isOpen
-      ? "Rejestracja w S-Sportivo została właśnie otwarta! Wejdź na stronę i się zapisz."
-      : "Rejestracja w S-Sportivo została zamknięta.";
+    message = isAvailable
+      ? `Pojawiły się wolne terminy USG!\n${formatSlots(result.slots)}`
+      : "Wszystkie terminy USG są obecnie zamknięte.";
   }
 
-  const response = await fetch(`https://ntfy.sh`, {
+  const response = await fetch("https://ntfy.sh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       topic: NTFY_TOPIC,
       title,
       message,
-      priority: Number(priority),
-      tags: [tags],
-      click: TARGET_URL,
+      priority,
+      tags,
+      click: BOOKERO_URL,
     }),
   });
 
@@ -125,8 +180,8 @@ async function notifyError(errorMessage: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       topic: NTFY_TOPIC,
-      title: "Strona niedostępna!",
-      message: `Strona nie odpowiada od 15 minut. Ostatni błąd: ${errorMessage}`,
+      title: "Bookero niedostępne!",
+      message: `API Bookero nie odpowiada od 15 minut. Ostatni błąd: ${errorMessage}`,
       priority: 4,
       tags: ["rotating_light"],
     }),
@@ -143,8 +198,8 @@ async function notifyRecovery(): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       topic: NTFY_TOPIC,
-      title: "Strona znów działa",
-      message: "Strona S-Sportivo znów odpowiada po przerwie.",
+      title: "Bookero znów działa",
+      message: "API Bookero (weterynarz) znów odpowiada po przerwie.",
       priority: 3,
       tags: ["white_check_mark"],
     }),
@@ -161,13 +216,13 @@ async function sendTestNotification(): Promise<void> {
 
   log("TEST_MODE: Sending test notification...");
 
-  const response = await fetch(`https://ntfy.sh`, {
+  const response = await fetch("https://ntfy.sh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       topic: NTFY_TOPIC,
-      title: "Test: monitor działa!",
-      message: "Sportivo monitor jest aktywny i wysyła powiadomienia poprawnie.",
+      title: "Test: Bookero monitor działa!",
+      message: "Monitor terminów USG jest aktywny i wysyła powiadomienia poprawnie.",
       priority: 3,
       tags: ["white_check_mark"],
     }),
@@ -181,8 +236,8 @@ async function runCheck(): Promise<void> {
   const db = initDb();
 
   try {
-    const currentState = await checkRegistration();
-    log(`Current state: ${currentState}`);
+    const result = await checkAvailability();
+    log(`Current state: ${result.state}`);
 
     // Check if we're recovering from an error streak
     const streak = db
@@ -199,19 +254,19 @@ async function runCheck(): Promise<void> {
 
     if (previousState === null) {
       log("First run, sending initial notification...");
-      await notify(currentState, null);
-      saveState(db, currentState, true);
-    } else if (currentState !== previousState) {
+      await notify(result, null);
+      saveState(db, result.state, true);
+    } else if (result.state !== previousState) {
       log("STATE CHANGED! Sending notification...");
-      await notify(currentState, previousState);
-      saveState(db, currentState, true);
+      await notify(result, previousState);
+      saveState(db, result.state, true);
     } else {
       log("State unchanged, no notification needed");
       if (TEST_MODE) {
         log("TEST_MODE: Sending status notification anyway...");
-        await notify(currentState, previousState);
+        await notify(result, previousState);
       }
-      saveState(db, currentState, false);
+      saveState(db, result.state, false);
     }
 
     log("Check complete.");
