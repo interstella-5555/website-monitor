@@ -1,5 +1,5 @@
 {
-  "name": "sportivo-monitor",
+  "name": "website-monitor",
   "version": "1.0.0",
   "scripts": {
     "start": "bun run src/index.ts"
