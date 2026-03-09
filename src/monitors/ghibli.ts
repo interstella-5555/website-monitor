@@ -1,4 +1,6 @@
 import { firefox } from "playwright";
+import { getHours } from "date-fns";
+import { toZonedTime } from "date-fns-tz";
 import type { Monitor, CheckResult } from "../index";
 
 const GHIBLI_URL = "https://l-tike.com/st1/ghibli-pk-en4/sitetop";
@@ -10,9 +12,7 @@ let lastRunAt = 0;
 let lastResult: CheckResult | null = null;
 
 function getJSTHour(): number {
-  const now = new Date();
-  const jst = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
-  return jst.getHours();
+  return getHours(toZonedTime(new Date(), "Asia/Tokyo"));
 }
 
 function getThrottleInterval(): number {
