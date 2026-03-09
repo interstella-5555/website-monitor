@@ -4,7 +4,7 @@ import type { Monitor, CheckResult } from "../index";
 const GHIBLI_URL = "https://l-tike.com/st1/ghibli-pk-en4/sitetop";
 const TARGET_TICKET = "【Ｍａｙ】Ｇｈｉｂｌｉ　Ｐａｒｋ　Ｏ－Ｓａｎｐｏ　Ｄａｙ　Ｐａｓｓ　Ｐｒｅｍｉｕｍ";
 
-type GhibliState = "not_on_sale" | "on_sale" | "sold_out";
+type GhibliState = "not_on_sale" | "on_sale" | "sold_out" | "page_changed";
 
 let lastRunAt = 0;
 let lastResult: CheckResult | null = null;
@@ -21,7 +21,7 @@ function getThrottleInterval(): number {
 
 function parseTicketState(pageText: string): GhibliState {
   const idx = pageText.indexOf(TARGET_TICKET);
-  if (idx === -1) throw new Error("Target ticket not found on page");
+  if (idx === -1) return "page_changed";
 
   const afterTicket = pageText.slice(idx + TARGET_TICKET.length);
   const nextSection = afterTicket.indexOf("【");
@@ -31,13 +31,14 @@ function parseTicketState(pageText: string): GhibliState {
   if (section.includes("On Sale")) return "on_sale";
   if (section.includes("Sold Out")) return "sold_out";
 
-  throw new Error(`Unknown ticket status in section: ${section.slice(0, 200)}`);
+  return "page_changed";
 }
 
 const stateLabels: Record<GhibliState, string> = {
   not_on_sale: "Not Yet On Sale",
   on_sale: "On Sale",
   sold_out: "Sold Out",
+  page_changed: "Page changed — ticket text not found!",
 };
 
 async function fetchTicketState(): Promise<CheckResult> {
@@ -125,6 +126,16 @@ export const ghibliMonitor: Monitor = {
             ? "First check: May Premium tickets are sold out."
             : "May Premium tickets are now sold out.",
         priority: 4,
+        tags: ["warning"],
+      };
+    }
+
+    if (state === "page_changed") {
+      return {
+        title: "Ghibli Park: page changed!",
+        message:
+          "Target ticket text not found on page. The site may have changed — check manually!",
+        priority: 5,
         tags: ["warning"],
       };
     }
